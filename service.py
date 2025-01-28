@@ -12,7 +12,6 @@ def calculate_descriptors(smiles):
     if mol is None:
         return None
 
-    # Извлекаем дескрипторы
     features = {}
     for i, j in Descriptors.descList:
         features[i] = j(mol)
