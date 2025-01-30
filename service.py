@@ -3,6 +3,9 @@ import pickle
 from sklearn.ensemble import RandomForestClassifier
 from rdkit.Chem import Descriptors
 from rdkit import RDLogger
+import io
+import base64
+from sklearn.impute import SimpleImputer
 
 RDLogger.DisableLog('rdApp.*')
 from rdkit import Chem
@@ -10,25 +13,20 @@ from rdkit.Chem import Draw
 import numpy as np
 import random
 import math
+from rdkit.Contrib.SA_Score import sascorer
+from rdkit.Chem import QED
 import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim.lr_scheduler import _LRScheduler
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from torch.nn.utils import clip_grad_norm_
-
-from collections import UserList, defaultdict
-from tqdm import tqdm
 
 
 def seed_all():
     np.random.seed(42)
     random.seed(42)
 
-seed_all()
 
+seed_all()
 
 df_train = pd.read_csv("./cleared.csv")
 train_data = list(df_train.Smiles)
@@ -250,6 +248,20 @@ def calculate_descriptors(smiles):
     return features
 
 
+def calculate_QED(smiles):
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    return QED.qed(mol)
+
+
+def calculate_sa_score(smiles):
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    return sascorer.calculateScore(mol)
+
+
 THRESHOLD = 0.28
 COLUMNS = ['PEOE_VSA10',
            'NumHDonors',
@@ -291,6 +303,51 @@ def load_model_cls(path):
 model_path_cls = "D:\\pythonProject\\model_rfc.pkl"
 model_cls = load_model_cls(model_path_cls)
 
+
+def classify_molecule(smiles, model_cls):
+    features = calculate_descriptors(smiles)
+    if features is None:
+        return "Invalid"
+
+    feature_vector = [features.get(col, None) for col in COLUMNS]
+
+    if any(f is None or np.isnan(f) for f in feature_vector):
+        return "Invalid"
+
+    features_array = np.array(feature_vector).reshape(1, -1)
+    probability = model_cls.predict_proba(features_array)[:, 1][0]
+
+    return "Active" if probability >= THRESHOLD else "Inactive", round(probability, 2)
+
+
+def display_molecules_table(smiles_list, model_cls):
+    data = []
+
+    for smiles in smiles_list:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol:
+            qed = round(calculate_QED(smiles), 2)
+            sa_score = round(calculate_sa_score(smiles), 2)
+            activity, prob = classify_molecule(smiles, model_cls)
+            if activity == "Invalid":
+                continue
+            img = Draw.MolToImage(mol, size=(500, 500))
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            img_b64 = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
+
+            data.append([smiles, img_b64, qed, sa_score, activity, prob])
+
+    df = pd.DataFrame(data, columns=["SMILES", "Image", "QED", "SA Score", "Activity", "Probability"])
+
+    st.data_editor(
+        df,
+        column_config={
+            "Image": st.column_config.ImageColumn("Structure", width="large")
+        }
+    )
+
+
 st.title("HIV GenAI")
 
 st.subheader("Choose your mode")
@@ -322,14 +379,11 @@ if mode == "Classification":
 elif mode == "Generation":
     st.write("Generation")
 
-    model_path_gnn = "D:\\pythonProject\\vae_model_epoch100.pt"
+    model_path_gnn = "D:\\pythonProject\\vae_model_epoch10.pt"
     model_gnn = load_model_gnn(model_path_gnn, vector, vocab)
-    st.success("Model loaded!!")
+    st.success("Model generated!!")
 
-    smiles = generate_smiles(model_gnn, 5)
-    st.write("Generated SMILES:", smiles)
-    images = display_molecules(smiles)
-    for img in images:
-        st.image(img)
+    smiles_list = generate_smiles(model_gnn, 100)
+    display_molecules_table(smiles_list, model_cls)
 
 # успех
